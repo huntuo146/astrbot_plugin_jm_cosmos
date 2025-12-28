@@ -63,9 +63,21 @@
   },
   "pack_password": {
     "type": "string",
-    "description": "打包密码",
-    "hint": "为ZIP或PDF设置密码，留空则不加密",
+    "description": "自定义打包密码",
+    "hint": "固定的ZIP或PDF密码。如果填写此项，将优先使用此密码，忽略随机密码设置。",
     "default": ""
+  },
+  "enable_random_password": {
+    "type": "bool",
+    "description": "启用随机密码",
+    "hint": "当自定义密码为空时，是否自动生成随机密码",
+    "default": false
+  },
+  "random_password_length": {
+    "type": "int",
+    "description": "随机密码长度",
+    "hint": "生成的随机密码位数 (4-16位)",
+    "default": 8
   },
   "auto_delete_after_send": {
     "type": "bool",
@@ -121,4 +133,4 @@
     "hint": "配合用户名使用，支持自动登录（可选）",
     "default": ""
   }
-}
+  }
