@@ -4,6 +4,8 @@ JM-Cosmos II - AstrBot JM漫画下载插件
 支持搜索、下载禁漫天堂的漫画本子，基于jmcomic库
 """
 
+import random
+import string
 from pathlib import Path
 
 import astrbot.api.message_components as Comp
@@ -22,7 +24,7 @@ PLUGIN_NAME = "jm_cosmos2"
     "jm_cosmos2",
     "GEMILUXVII",
     "JM漫画下载插件 - 支持搜索、下载禁漫天堂的漫画本子，支持加密PDF/ZIP打包",
-    "2.5.4",
+    "2.5.5",
     "https://github.com/GEMILUXVII/astrbot_plugin_jm_cosmos",
 )
 class JMCosmosPlugin(Star):
@@ -82,6 +84,35 @@ class JMCosmosPlugin(Star):
             return False, MessageFormatter.format_error("group_disabled")
 
         return True, ""
+
+    def _get_pack_password(self) -> str:
+        """
+        获取打包密码
+        优先使用配置的固定密码，如果为空且开启了随机密码，则生成随机密码
+        """
+        # 1. 优先检查固定密码
+        fixed_pwd = self.config_manager.pack_password
+        if fixed_pwd:
+            return fixed_pwd
+
+        # 2. 检查是否开启随机密码
+        # 注意：这里直接访问 self.config 以获取新添加的配置项，兼容旧版ConfigManager
+        enable_random = self.config.get("enable_random_password", False)
+        
+        if enable_random:
+            try:
+                length = int(self.config.get("random_password_length", 8))
+                # 限制长度在 4-16 之间
+                length = max(4, min(16, length))
+                
+                # 生成随机密码 (字母+数字)
+                chars = string.ascii_letters + string.digits
+                return ''.join(random.choice(chars) for _ in range(length))
+            except Exception as e:
+                logger.error(f"生成随机密码失败: {e}")
+                return ""
+                
+        return ""
 
     @filter.command("jmhelp")
     async def help_command(self, event: AstrMessageEvent):
@@ -152,10 +183,13 @@ class JMCosmosPlugin(Star):
                 )
                 return
 
+            # 获取密码（固定或随机）
+            final_password = self._get_pack_password()
+
             # 打包文件
             packer = JMPacker(
                 pack_format=self.config_manager.pack_format,
-                password=self.config_manager.pack_password,
+                password=final_password,
             )
 
             pack_result = packer.pack(
@@ -165,6 +199,10 @@ class JMCosmosPlugin(Star):
 
             # 发送结果消息
             result_msg = MessageFormatter.format_download_result(result, pack_result)
+
+            # 如果设置了密码且打包成功，追加密码显示
+            if pack_result.success and pack_result.format != "none" and final_password:
+                result_msg += f"\n🔐 解压密码: {final_password}"
 
             if (
                 pack_result.success
@@ -274,10 +312,142 @@ class JMCosmosPlugin(Star):
                 )
                 return
 
+            # 获取密码（固定或随机）
+            final_password = self._get_pack_password()
+
             # 打包
             packer = JMPacker(
                 pack_format=self.config_manager.pack_format,
-                password=self.config_manager.pack_password,
+                password=final_password,
+            )
+
+            pack_result = packer.pack(
+                source_dir=result.save_path,
+                output_name=f"JM{album_id}_{result.title[:20]}",
+            )
+
+            # 发送结果消息
+            result_msg = MessageFormatter.format_download_result(result, pack_result)
+
+            # 如果设置了密码且打包成功，追加密码显示
+            if pack_result.success and pack_result.format != "none" and final_password:
+                result_msg += f"\n🔐 解压密码: {final_password}"
+
+            if (
+                pack_result.success
+                and pack_result.output_path
+                and pack_result.format != "none"
+            ):
+                # 发送打包后的文件
+                yield event.chain_result(
+                    [
+                        Comp.Plain(result_msg),
+                        Comp.File(
+                            name=pack_result.output_path.name,
+                            file=str(pack_result.output_path),
+                        ),
+                    ]
+                )
+
+                # 自动清理
+                if self.config_manager.auto_delete_after_send:
+                    JMPacker.cleanup(result.save_path)
+                    JMPacker.cleanup(pack_result.output_path)
+            else:
+                yield event.plain_result(result_msg)
+
+        except Exception as e:
+            logger.error(f"下载本子失败: {e}")
+            if self.debug_mode:
+                import traceback
+
+                logger.error(traceback.format_exc())
+            yield event.plain_result(
+                MessageFormatter.format_error("download_failed", str(e))
+            )
+
+    @filter.command("jmc")
+    async def download_photo_command(
+        self, event: AstrMessageEvent, album_id: str = None, chapter_index: str = None
+    ):
+        """
+        下载指定本子的指定章节
+
+        用法: /jmc <本子ID> <章节序号>
+        示例: /jmc 123456 3
+        """
+        # 权限检查
+        has_perm, error_msg = self._check_permission(event)
+        if not has_perm:
+            yield event.plain_result(error_msg)
+            return
+
+        # 参数检查
+        if album_id is None or chapter_index is None:
+            yield event.plain_result(
+                "❌ 请提供本子ID和章节序号\n用法: /jmc <本子ID> <章节序号>\n示例: /jmc 123456 3"
+            )
+            return
+
+        album_id = str(album_id).strip()
+        if not album_id.isdigit():
+            yield event.plain_result(MessageFormatter.format_error("invalid_id"))
+            return
+
+        # 验证章节序号
+        try:
+            chapter_idx = int(chapter_index)
+            if chapter_idx < 1:
+                yield event.plain_result("❌ 章节序号必须大于0")
+                return
+        except ValueError:
+            yield event.plain_result("❌ 章节序号必须是数字")
+            return
+
+        try:
+            yield event.plain_result(
+                f"⏳ 正在获取本子 {album_id} 的第 {chapter_idx} 章节信息..."
+            )
+
+            # 获取章节的真正 photo_id
+            chapter_info = await self.browser.get_photo_id_by_index(
+                album_id, chapter_idx
+            )
+
+            if chapter_info is None:
+                yield event.plain_result(
+                    f"❌ 无法获取章节信息\n可能的原因:\n"
+                    f"• 本子 {album_id} 不存在\n"
+                    f"• 第 {chapter_idx} 章节不存在"
+                )
+                return
+
+            photo_id, photo_title, total_chapters = chapter_info
+
+            yield event.plain_result(
+                f"📖 找到章节: {photo_title}\n"
+                f"📚 章节: {chapter_idx}/{total_chapters}\n"
+                f"⏳ 开始下载..."
+            )
+
+            # 使用真正的 photo_id 下载
+            result = await self.download_manager.download_photo(photo_id)
+
+            if not result.success:
+                yield event.plain_result(
+                    MessageFormatter.format_error(
+                        "download_failed", result.error_message
+                    )
+                )
+                return
+
+            # 获取密码（固定或随机）
+            final_password = self._get_pack_password()
+
+            # 打包
+            packer = JMPacker(
+                pack_format=self.config_manager.pack_format,
+                password=final_password,
             )
 
             pack_result = packer.pack(
@@ -286,6 +456,10 @@ class JMCosmosPlugin(Star):
             )
 
             result_msg = MessageFormatter.format_download_result(result, pack_result)
+
+            # 如果设置了密码且打包成功，追加密码显示
+            if pack_result.success and pack_result.format != "none" and final_password:
+                result_msg += f"\n🔐 解压密码: {final_password}"
 
             if (
                 pack_result.success
